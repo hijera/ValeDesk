@@ -4,6 +4,29 @@ import { dirnameFsPath, isPathWithin, normalizeFsPath } from "../platform/fs-pat
 import { useI18n } from "../i18n";
 import { FilePreviewPanel } from "./FilePreviewPanel";
 
+// --- Thumbnail request queue (max N concurrent IPC calls) ---
+const THUMB_CONCURRENCY = 3;
+let _thumbActive = 0;
+const _thumbQueue: Array<() => void> = [];
+
+function enqueueThumbnail(fn: () => Promise<void>): void {
+  const run = () => {
+    _thumbActive++;
+    fn().finally(() => {
+      _thumbActive--;
+      if (_thumbQueue.length > 0) {
+        const next = _thumbQueue.shift()!;
+        next();
+      }
+    });
+  };
+  if (_thumbActive < THUMB_CONCURRENCY) {
+    run();
+  } else {
+    _thumbQueue.push(run);
+  }
+}
+
 export type FileItem = {
   name: string;
   path: string;
@@ -29,29 +52,49 @@ function isImage(name: string): boolean {
   return IMAGE_EXTS.has(getExt(name));
 }
 
-// Thumbnail for a single file row — lazy-loads via IntersectionObserver
+// Thumbnail for a single file row — lazy-loads via IntersectionObserver with debounce + queue
 function FileThumbnail({ path }: { path: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [src, setSrc] = useState<string | null>(null);
-  const [tried, setTried] = useState(false);
+  const triedRef = useRef(false);
 
   useEffect(() => {
     if (!ref.current) return;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting && !tried) {
-          setTried(true);
-          getPlatform()
-            .invoke<string | null>('get-thumbnail', path, 64)
-            .then((dataUrl) => { if (dataUrl) setSrc(dataUrl); })
-            .catch(() => {/* silently ignore */});
+        if (!entries[0]?.isIntersecting) {
+          // Element left viewport — cancel pending debounce
+          if (debounceTimer !== null) {
+            clearTimeout(debounceTimer);
+            debounceTimer = null;
+          }
+          return;
         }
+        if (triedRef.current) return;
+
+        // Debounce: wait 80ms to skip rapidly scrolled-past items
+        if (debounceTimer !== null) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          if (triedRef.current) return;
+          triedRef.current = true;
+          enqueueThumbnail(() =>
+            getPlatform()
+              .invoke<string | null>('get-thumbnail', path, 64)
+              .then((dataUrl) => { if (dataUrl) setSrc(dataUrl); })
+              .catch(() => {/* silently ignore */})
+          );
+        }, 80);
       },
       { threshold: 0.1 }
     );
     observer.observe(ref.current);
-    return () => observer.disconnect();
-  }, [path, tried]);
+    return () => {
+      observer.disconnect();
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+    };
+  }, [path]);
 
   return (
     <div ref={ref} className="w-10 h-10 flex-shrink-0 rounded overflow-hidden bg-ink-100 flex items-center justify-center">
