@@ -7,10 +7,11 @@ mod scheduler;
 
 use db::{Database, CreateSessionParams, UpdateSessionParams, Session, SessionHistory, TodoItem, FileChange, LLMProvider, LLMModel, LLMProviderSettings, ApiSettings, ScheduledTask, CreateScheduledTaskParams, UpdateScheduledTaskParams};
 use scheduler::SchedulerService;
+use base64::Engine as _;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -813,6 +814,33 @@ fn list_directory(path: String) -> Result<Vec<FileItem>, String> {
   }
 
   Ok(out)
+}
+
+#[tauri::command]
+fn get_thumbnail(path: String, size: Option<u32>) -> Result<Option<String>, String> {
+  let thumb_size = size.unwrap_or(128);
+  let img = image::open(&path).map_err(|e| format!("[get_thumbnail] Cannot open image: {e}"))?;
+  let thumb = img.thumbnail(thumb_size, thumb_size);
+
+  // Encode as PNG into a buffer
+  let mut buf: Vec<u8> = Vec::new();
+  thumb
+    .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+    .map_err(|e| format!("[get_thumbnail] Encode failed: {e}"))?;
+
+  let encoded = base64::engine::general_purpose::STANDARD.encode(&buf);
+  Ok(Some(format!("data:image/png;base64,{encoded}")))
+}
+
+#[tauri::command]
+fn get_file_text_preview(path: String, max_bytes: Option<usize>) -> Result<Option<String>, String> {
+  let limit = max_bytes.unwrap_or(4096);
+  let mut file = fs::File::open(&path).map_err(|e| format!("[get_file_text_preview] Cannot open: {e}"))?;
+  let mut buf = vec![0u8; limit];
+  let n = file.read(&mut buf).map_err(|e| format!("[get_file_text_preview] Read failed: {e}"))?;
+  buf.truncate(n);
+  // Convert to UTF-8 lossy so binary files don't crash
+  Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
 #[tauri::command]
@@ -2143,6 +2171,8 @@ fn main() {
     .invoke_handler(tauri::generate_handler![
       client_event,
       list_directory,
+      get_thumbnail,
+      get_file_text_preview,
       read_memory,
       write_memory,
       get_file_old_content,
