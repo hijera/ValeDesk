@@ -73,24 +73,33 @@ async function fetchOpenRouterModels(apiKey: string): Promise<PartialModel[]> {
 // Fetch models from Ollama
 async function fetchOllamaModels(baseUrl: string): Promise<PartialModel[]> {
   try {
-    const apiRoot = baseUrl.replace(/\/v1\/?$/, '');
-    const response = await fetch(`${apiRoot}/api/tags`);
+    const apiRoot = baseUrl.replace(/\/v1\/?$/, '').replace(/\/$/, '');
+    const url = new URL('/api/tags', apiRoot.startsWith('http') ? apiRoot : `http://${apiRoot}`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+    const response = await fetch(url.toString(), { signal: controller.signal });
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      throw new Error(`Ollama /api/tags failed: HTTP ${response.status} ${response.statusText} (${url})`);
     }
 
     const data = await response.json();
-    const models = (data.models || []).map((model: any) => ({
-      id: model.name,
-      name: model.name,
-      description: model.details?.family || 'Local Ollama model',
-      contextLength: model.details?.context_length || undefined,
-    }));
+    const models = (data.models || []).map((model: any) => {
+      const modelId = model.name || model.model;
+      return {
+        id: modelId,
+        name: modelId,
+        description: model.details?.family || 'Local Ollama model',
+        contextLength: model.details?.context_length || undefined,
+      };
+    });
 
     return models;
   } catch (error) {
-    console.error('[LLM Providers] Failed to fetch Ollama models:', error);
+    const url = baseUrl.replace(/\/v1\/?$/, '').replace(/\/$/, '') + '/api/tags';
+    console.error('[LLM Providers] Failed to fetch Ollama models:', url, error);
     throw error;
   }
 }
@@ -178,6 +187,7 @@ export async function fetchModelsFromProvider(provider: LLMProvider): Promise<LL
       break;
 
     case 'ollama':
+      console.log('Fetching Ollama models from', provider.baseUrl || 'http://localhost:11434/v1');
       fetchedModels = await fetchOllamaModels(provider.baseUrl || 'http://localhost:11434/v1');
       break;
 
@@ -226,7 +236,7 @@ export async function checkModelsAvailability(provider: LLMProvider, models: LLM
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            model: model.id.split('-').slice(0, -1).join('-'), // Extract original model ID
+            model: model.id.includes('::') ? model.id.split('::')[1] : model.id,
             messages: [{ role: 'user', content: 'test' }],
             max_tokens: 1,
           }),

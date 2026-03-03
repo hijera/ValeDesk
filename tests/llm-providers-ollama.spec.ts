@@ -37,7 +37,9 @@ describe("llm-providers ollama", () => {
 
     const models = await fetchModelsFromProvider(provider);
 
-    expect(fetchMock).toHaveBeenCalledWith("http://localhost:11434/api/tags");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("http://localhost:11434/api/tags");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ signal: expect.any(AbortSignal) });
     expect(models).toEqual([
       {
         id: "ollama-local::llama3:8b",
@@ -48,6 +50,37 @@ describe("llm-providers ollama", () => {
         enabled: true,
         contextLength: 8192,
       },
+    ]);
+  });
+
+  it("uses model.model fallback when model.name is missing", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        models: [
+          { model: "gemma3", details: { family: "gemma" } },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock as any);
+
+    const provider: LLMProvider = {
+      id: "ollama-local",
+      type: "ollama",
+      name: "Ollama Local",
+      apiKey: "",
+      baseUrl: "http://localhost:11434/v1",
+      enabled: true,
+    };
+
+    const models = await fetchModelsFromProvider(provider);
+
+    expect(models).toEqual([
+      expect.objectContaining({
+        id: "ollama-local::gemma3",
+        name: "gemma3",
+        description: "gemma",
+      }),
     ]);
   });
 
@@ -78,6 +111,8 @@ describe("llm-providers ollama", () => {
     const [url, options] = fetchMock.mock.calls[0];
     expect(url).toBe("http://10.0.0.10:11434/v1/chat/completions");
     expect(options.headers).toEqual({ "Content-Type": "application/json" });
+    const body = JSON.parse(options.body);
+    expect(body.model).toBe("llama3:8b");
   });
 
   it("validates Ollama provider without apiKey but with baseUrl", () => {

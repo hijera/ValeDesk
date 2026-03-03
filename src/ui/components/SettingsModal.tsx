@@ -186,13 +186,16 @@ export function SettingsModal({ onClose, onSave, currentSettings }: SettingsModa
     getPlatform().sendClientEvent({ type: "llm.models.fetch", payload: { providerId } });
     
     const unsubscribe = getPlatform().onServerEvent((event) => {
-      if (event.type === "llm.models.fetched") {
-        const { models } = event.payload;
-        setLlmModels(models);
+      if (event.type === "llm.models.fetched" && event.payload.providerId === providerId) {
+        const { models: newModels } = event.payload;
+        setLlmModels(prev => [
+          ...prev.filter(m => m.providerId !== providerId),
+          ...newModels,
+        ]);
         setLlmLoading(false);
         unsubscribe();
-        loadLlmProviders(); // Reload to get updated settings
-      } else if (event.type === "llm.models.error") {
+        loadLlmProviders();
+      } else if (event.type === "llm.models.error" && event.payload.providerId === providerId) {
         setLlmError(event.payload.message);
         setLlmLoading(false);
         unsubscribe();
